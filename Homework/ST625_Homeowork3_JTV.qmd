@@ -1,0 +1,318 @@
+---
+title: "ST 625: Homework 3"
+subtitle: "Kaplan Meier Preliminaries"
+author: "Trent VanHawkins"
+format: 
+  pdf:
+    geometry: "margin=0.75in"
+    mathspec: true
+    cap-location: bottom
+    tbl-cap-location: bottom
+    header-includes: 
+      - \usepackage{fancyhdr, amsthm, amssymb,amsfonts,amsthm, amsmath, bbm}
+      - \pagestyle{fancy}
+      - \fancyhead[R]{ST 625}
+      - \fancyhead[L]{Trent VanHawkins}
+      - \fancyfoot[C]{\thepage} # Center page number at bottom of each page
+page-layout: full
+---
+
+# Exercise 1
+
+Load the survival package in `R`, and load the `aml` dataset. This dataset comprises survival times for patients with Acute Myelogenous Leukemia, comparing survival times for patients in the treatment arm who were maintained on chemotherapy vs. the standard of care for patients who were not maintained on chemotherapy.
+
+  1. Write a function that takes a vector of event times, and a vector of associated censoring indicators and returns the nonparametric estimators for hazard rate. 
+
+```{r}
+library(survival)
+
+aml <- survival::aml
+
+# 1. Hazard Rate Fucntion -------------------------------------------------
+## funciton to return lambda_hat values
+get_lambda_hat <- function(t, c){
+  #get count of failures at each t
+  d <- table(t[c == 1])
+  failure_times <- as.numeric(names(d)) #times of failures
+  y_bar <- sapply(failure_times, function(time) sum(t >= time)) # Number remianing at time t
+  
+  return(d/y_bar)
+}
+
+# Run the function
+lambda_hat <- get_lambda_hat(aml$time, aml$status)
+```
+  
+  2. Use this function’s output to plot the Kaplan-Meier estimator for the survival function
+under the null distribution for the aml dataset (remember, this is a step-function with
+steps at non-censoring event times)
+
+```{r warning=FALSE, message=FALSE}
+library(tidyverse)
+# 2. Get the kaplean-meier estimator and plot -----------------------------
+failure_times <- as.numeric(names(lambda_hat))
+
+# Get S_km 
+S_km <- sapply(failure_times, function(t) prod(1 - lambda_hat[which(failure_times <= t)]))
+
+#Create a data frame for plotting (add a point for time 0)
+estimate_df <- data.frame(t = c(0, failure_times, max(aml$time)), S = c(1,S_km, S_km[length(S_km)]))
+
+#Plot it
+estimate_df %>% 
+  ggplot(aes(x = t, y = S))+
+  geom_step() +
+  lims(y = c(0,1))+
+  labs(y = expression(S^KM * (t)))
+```
+
+3. Write a function to output the upper and lower log-log confidence bounds for $\hat{S}^{\text{KM}}(t)$ for a given confidence level
+
+```{r}
+# 3. log-log confidence bound ---------------------------------------------
+
+loglog_ci <- function(s_km, t, c, alpha){
+  #Get what we need to construct sigma_hat
+  d <- table(t[c == 1]) #number of failures at time t
+  failure_times <- as.numeric(names(d)) #tiems of failures
+  y_bar <- sapply(failure_times, function(time) sum(t >= time)) # Number remianing at time t
+  
+  #compute sigma_hat
+  inner_sum <- d/(y_bar * (y_bar - d))
+  sigma_squared <- sapply(failure_times, function(time) sum(inner_sum[which(failure_times <= time)]))
+  sigma_hat <- sqrt(sigma_squared)
+  
+  ## compute SE on log-log scale
+  loglog_se <- 1/abs(log(s_km)) * sigma_hat
+  
+  ## Compute the confidence interval
+  lower_ci <- s_km^(exp(loglog_se * qnorm(alpha/2, lower.tail = F)))
+  upper_ci <- s_km^(exp(-loglog_se * qnorm(alpha/2, lower.tail = F)))
+  
+  return(list(lower = lower_ci, upper = upper_ci))
+}
+
+s_ci <- loglog_ci(S_km, aml$time, aml$status, 0.05)
+
+```
+
+  4. Overlay the survival function and the 95% bounds on the same plot
+  
+```{r}
+# 4-5 Show that the plots are the same ------------------------------------
+## include confidence bands in data frame
+estimate_df$lower_ci <- c(1, s_ci$lower, s_ci$lower[which.min(s_ci$lower)])
+estimate_df$upper_ci <- c(1, s_ci$upper, s_ci$upper[which.min(s_ci$upper)])
+
+colors <- RColorBrewer::brewer.pal(n = 3, name = "Set2")
+
+## Plot by-hand plot
+by_hand <- estimate_df %>% 
+  ggplot(aes(x = t, y = S))+
+  geom_step(color = colors[2], linewidth = 1.25)+
+  geom_step(aes(y = lower_ci), linetype = "dashed")+
+  geom_step(aes(y = upper_ci), linetype = "dashed")+
+  theme_minimal()+
+  labs(y = expression(S^KM * (t)),
+       x = "Time", 
+       title = "Kaplan Meir Estimator (By Hand)")
+
+by_hand
+```
+
+5. Show that your plot matches the plot made by `survival`
+
+```{r}
+#| fig-width: 8
+
+library(ggpubr)
+#Actual sruvival fit and data frame
+fit <- survfit(Surv(time, status) ~ 1, data = aml, conf.type = "log-log")
+fit_summary <- summary(fit)
+survival_df <- data.frame(t = c(0,fit_summary$time,max(aml$time)),
+                          S = c(1, fit_summary$surv, min(fit_summary$surv)),
+                          lower_ci = c(1, fit_summary$lower, min(fit_summary$lower)),
+                          upper_ci = c(1, fit_summary$upper, min(fit_summary$upper)))
+
+survival_plot <- survival_df %>% 
+  ggplot(aes(x = t, y = S))+
+  geom_step(color = colors[3], linewidth = 1.25)+
+  geom_step(aes(y = lower_ci), linetype = "dashed")+
+  geom_step(aes(y = upper_ci), linetype = "dashed")+
+  theme_minimal()+
+  labs(y = expression(S^KM * (t)),
+       x = "Time", 
+       title = "Kaplan Meir Estimator (survfit)")
+
+ggarrange(by_hand, survival_plot, nrow = 1)
+```
+
+6. Write a function that calculates the log-rank test-statistic $Z_1(\tau)$ where the $d_{i1}$ observations come from the maintenance arm of the trial, and $\tau$ is the maximum observed
+event (censored or uncensored) time in either arm. You can reuse the function you
+wrote in part 1 as a helper function for this part if you’d like.
+
+7. Write a function that calculates the standard error of the log-rank test statistic, and,
+using the limiting normal distribution, determine the level-0.05 rejection region and
+determine if $Z_1(\tau)$ is in the rejection region or not (i.e. do you reject the null hypothesis of λ1(t) = λ2(t)∀t ∈ [0, τ ]).
+
+$$
+H_0: \lambda_1(t) = \lambda_2(t) \qquad \forall t \in [0, \tau]
+$$
+
+```{r}
+# Create log-rank statistic ------------------------------------------------------
+lr_test <- function(t, c, j, group){
+
+  ## Indicators
+  failed <- c == 1
+  group_ind <- j == group
+  ## number of failures
+  all_failure_times <- sort(unique(t[failed]))
+  d_i <- table(factor(t[failed], levels = all_failure_times)) #number of failures at time t
+  d_j <- table(factor(t[failed & group_ind == 1], levels = all_failure_times)) #number of failures at time t in group j
+  
+  ##Number remaining at time t
+  y_bar_i <- sapply(all_failure_times, function(time) sum(t >= time)) # both groups
+  y_bar_j <- sapply(all_failure_times, function(time) sum(t[group_ind] >= time)) #group j
+  
+  # Compute the statistic
+  expected_j <- d_i * (y_bar_j / y_bar_i)
+  z_j <- sum(d_j - expected_j, na.rm = TRUE)
+  
+  #Compute the standard error
+  zj_var <- sum(d_i*(y_bar_j/y_bar_i)*(1 - (y_bar_j/y_bar_i))*((y_bar_i - d_i)/(y_bar_i - 1)), na.rm = TRUE)
+  
+  #Compute the p-value
+  test_stat <- (z_j/sqrt(zj_var))**2
+  pval <- pchisq(abs(test_stat), df = 1, lower.tail = FALSE)
+  return(list(Chisq = test_stat, p = pval))
+}
+
+# Run the by-hand test
+lr_byhand <- lr_test(aml$time, aml$status, aml$x, "Maintained")
+```
+
+At $\alpha = 0.05$, we fail to reject the null hypothesis that the hazards are equivalent between the `Maintenaned` and `Non-Maintenaned` groups for all observed $t$ $(p = `r round(lr_byhand[['p']], 3)`, \chi^2 = `r round(lr_byhand[['Chisq']], 3)`)$. 
+
+8. Verify that your code reproduces the results from `survival`
+
+```{r}
+## Using survival
+lr_survival <- survdiff(Surv(time, status) ~ x, data = aml)
+
+#Check if they are the same (without machine-rounding error: 
+cat("By-hand Statistic:", round(lr_byhand$Chisq, 3), "survdiff statistic:", round(lr_survival$chisq, 3))
+
+cat("By-hand p-value:", round(lr_byhand$p, 3), "survdiff p-value:", round(lr_survival$pvalue, 3))
+
+
+```
+
+# Exercise 2
+
+Use the approach we outlined in class to derive the logit point-wise confidence interval for $\hat{S}^{\text{KM}}(t)$. Specifically, construct a confidence set for $S(t)$ by first generating $C^g(\hat{S}^{\text{KM}}(t))$ such that:
+
+$$
+P(g(S(t)) \in C^{g(\hat{S}^{\text{KM}}(t))}) \geq 1 - \alpha
+$$
+
+and transforming back to $\hat{S}^{\text{KM}}(t)$ using $g^{-1}$:
+
+$$
+P(S(t) \in g^{-1}(C^g(\hat{S}^{\text{KM}}(t)))) \geq 1 - \alpha.
+$$
+
+Let $g : [0, 1] \to \mathbb{R}$, and $g(x) = \log \left( \frac{x}{1-x} \right)$. It will involve expressing the logit of $\hat{S}^{\text{KM}}(t)$ in terms of $\log \hat{S}^{\text{KM}}(t)$ and using the framework we used to derive the log-log pointwise confidence intervals for the Kaplan-Meier estimator. You may take for granted that as $n \to \infty$
+
+$$
+\frac{\hat{S}^{\text{KM}}(t) - S(t)}{\sqrt{\text{Var}(\hat{S}^{\text{KM}}(t))}} \xrightarrow{d} \text{Normal}(0, 1).
+$$
+
+## Solution
+
+Note first that 
+$$
+g(\hat{S}^{\text{KM}}(t)) = \log\left(\frac{\hat{S}^{\text{KM}}(t)}{1 - \hat{S}^{\text{KM}}(t)}\right) = \log\left(\hat{S}^{\text{KM}}(t)\right) - \log\left(1 - \hat{S}^{\text{KM}}(t)\right)
+$$
+We would like to define our transformation in terms of $\log\left(\hat{S}^{\text{KM}}(t)\right)$ to facilitate a Taylor expansion on the log scale. 
+Let
+$$
+y = \log\left(\hat{S}^{\text{KM}}(t)\right) \implies \hat{S}^{\text{KM}}(t) = e^y
+$$
+Then as a function of $y$, we have
+$$
+g(e^y) = y - \log\left(1 - e^y\right) \qquad \frac{\partial g(e^y)}{\partial y} = 1 + \frac{e^y}{1 - e^y} = \frac{1}{1 - e^y}
+$$
+This allows us to expand $g(\hat{S}^{\text{KM}}(t))$ about $g(S(t))$ in terms of the log-scale difference $\log(\hat{S}^{\text{KM}}(t)) - \log(S(t))$. Letting $\theta = \log(S(t))$, the first-order taylor expansion is given by 
+$$
+g(e^y) \approx \theta - \log\left(1 - e^\theta\right) + \frac{1}{1 - e^\theta}(y - \theta)
+$$
+
+Taking the variance and standard error gives
+
+$$
+\mathrm{Var}(g(e^y)) \approx \frac{1}{\left(1 - e^\theta \right)^2} \mathrm{Var}(y) 
+$$
+
+Taking the square-root and plugging in for $y$ and $\theta$ gives
+
+$$
+\mathrm{SE}\left(g\left(\hat{S}^{\text{KM}}(t)\right)\right) = \frac{1}{1 - \hat{S}^{\text{KM}}(t)} \hat{\sigma}(t); \qquad \hat{\sigma}(t) = \sum_{i|d_i \geq 1, t_i \leq t} \frac{d_i}{\bar{Y}(t_i)\left(\bar{Y}(t_i) - d_i\right)}
+$$
+
+Now, we create a pivot. Set
+
+$$
+u = \log\left(\frac{S(t)}{1 - S(t)}\right) \quad \hat{u} = \log\left(\frac{\hat{S}^{\text{KM}}(t)}{1 - \hat{S}^{\text{KM}}(t)}\right) \quad \hat{\sigma}_y = \mathrm{SE}(\hat{u})
+$$
+The inverse-transformation is given by the inverse-logit function 
+
+$$
+\hat{S}^{\text{KM}}(t) = \frac{1}{1 + e^{-u}}
+$$
+which is monotone-increasing, so that
+
+$$
+a \leq u \leq b \implies \mathrm{\mathrm{logit}^{-1}(a) \leq \mathrm{logit}^{-1}(u) \leq \mathrm{logit}^{-1}(b)}
+$$
+As in class, we will assume asymptotic normality: 
+
+$$
+\frac{\hat{u} - u}{\hat{\sigma}_u} \overset{d}{\longrightarrow}\mathcal{N}(0,1).
+$$
+
+Now, letting $z_{1 - \alpha/2}$ denote the $1 - \alpha/2$ quantile of the standard normal distribution such that
+
+$$
+z_{1-\alpha/2} = \Phi^{-1}(1-\alpha/2)
+$$
+
+We then create a pivot and solve for $S(t)$: 
+
+$$
+\begin{split}
+P(-z_{1-\alpha/2} \leq \frac{\hat{u} - u}{\hat\sigma_u} \leq z_{1-\alpha/2}) &= P(\hat{u} - z_{1-\alpha/2}\hat\sigma_u \leq u \leq \hat{u} + z_{1-\alpha/2}\hat\sigma_u) \\
+&= P\left(\mathrm{logit}^{-1}(\hat{u} - z_{1-\alpha/2}\hat\sigma_u) \leq u \leq \mathrm{logit}^{-1}(\hat{u} + z_{1-\alpha/2}\hat\sigma_u))\right)
+\end{split}
+$$
+
+Note that 
+
+$$
+\mathrm{logit}^{-1}(\hat{u} - z_{1-\alpha/2}\hat\sigma_u) = \frac{1}{1 + e^{-(\hat{u} - z_{1-\alpha/2}\hat\sigma_u)}} = \frac{1}{1 + e^{-\hat{u}} e^{z_{1-\alpha/2}\hat\sigma_u}}
+$$
+
+Looking only at the exponential component containing $\hat{u}$, we have
+
+$$
+e^{-\hat{u}} = e^{-\log\frac{\hat{S}^{\text{KM}}(t)}{1 - \hat{S}^{\text{KM}}(t)}} = \frac{1 - \hat{S}^{\text{KM}}(t)}{\hat{S}^{\text{KM}}(t)} = \frac{1}{\hat{S}^{\text{KM}}(t)} - 1
+$$
+
+Applying similar algebra to the other side and multiplying top and bottom by $\hat{S}^{\text{KM}}(t)$ gives
+
+$$
+\begin{split}
+P\left(\frac{1}{1 + \left(\frac{1}{\hat{S}^{\text{KM}}(t)} - 1\right)e^{z_{1 - \alpha/2}\hat\sigma_u}} \leq S(t) \leq \frac{1}{1 + \left(\frac{1}{\hat{S}^{\text{KM}}(t)} - 1\right)e^{-z_{1 - \alpha/2}\hat\sigma_u}} \right) &= 1 - \alpha \\
+P\left(\frac{\hat{S}^{\text{KM}}(t)}{\hat{S}^{\text{KM}}(t) + \left(1 - \hat{S}^{\text{KM}}(t)\right)e^{z_{1 - \alpha/2}\hat\sigma_u}} \leq S(t) \leq \frac{\hat{S}^{\text{KM}}(t)}{\hat{S}^{\text{KM}}(t) + \left(1 - \hat{S}^{\text{KM}}(t)\right)e^{-z_{1 - \alpha/2}\hat\sigma_u}} \right) &= 1 - \alpha
+\end{split}
+$$

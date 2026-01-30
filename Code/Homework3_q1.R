@@ -14,6 +14,8 @@
 
 library(survival)
 library(tidyverse)
+library(ggpubr)
+
 aml <- survival::aml
 
 # 1. Hazard Rate Fucntion -------------------------------------------------
@@ -78,6 +80,7 @@ estimate_df$upper_ci <- c(1, s_ci$upper, s_ci$upper[which.min(s_ci$upper)])
 
 #Actual sruvival fit and data frame
 fit <- survfit(Surv(time, status) ~ 1, data = aml, conf.type = "log-log")
+fit_summary <- summary(fit)
 survival_df <- data.frame(t = c(0,fit_summary$time,max(aml$time)),
                           S = c(1, fit_summary$surv, min(fit_summary$surv)),
                           lower_ci = c(1, fit_summary$lower, min(fit_summary$lower)),
@@ -106,5 +109,43 @@ survival_plot <- survival_df %>%
        x = "Time", 
        title = "Kaplan Meir Estimator (survfit)")
 
-library(ggpubr)
 ggarrange(by_hand, survival_plot, nrow = 1)
+
+
+# Create log-rank statistic ------------------------------------------------------
+## Using survival
+lr_survival <- survdiff(Surv(time, status) ~ x, data = aml)
+
+lr_test <- function(t, c, j, group){
+
+  ## Indicators
+  failed <- c == 1
+  group_ind <- j == group
+  ## number of failures
+  all_failure_times <- sort(unique(t[failed]))
+  d_i <- table(factor(t[failed], levels = all_failure_times)) #number of failures at time t
+  d_j <- table(factor(t[failed & group_ind == 1], levels = all_failure_times)) #number of failures at time t in group j
+  
+  ##Number remaining at time t
+  y_bar_i <- sapply(all_failure_times, function(time) sum(t >= time)) # both groups
+  y_bar_j <- sapply(all_failure_times, function(time) sum(t[group_ind] >= time)) #group j
+  
+  # Compute the statistic
+  expected_j <- d_i * (y_bar_j / y_bar_i)
+  z_j <- sum(d_j - expected_j, na.rm = TRUE)
+  
+  #Compute the standard error
+  zj_var <- sum(d_i*(y_bar_j/y_bar_i)*(1 - (y_bar_j/y_bar_i))*((y_bar_i - d_i)/(y_bar_i - 1)), na.rm = TRUE)
+  
+  #Compute the p-value
+  test_stat <- (z_j/sqrt(zj_var))**2
+  pval <- pchisq(abs(test_stat), df = 1, lower.tail = FALSE)
+  return(list(Chisq = test_stat, p = pval))
+}
+
+# Run the by-hand test
+lr_byhand <- lr_test(aml$time, aml$status, aml$x, "Maintained")
+
+#Check if they are the same (without machine-rounding error: 
+(lr_byhand$Chisq - lr_survival$chisq) < 0.001
+(lr_byhand$p - lr_survival$pvalue) < 0.001
